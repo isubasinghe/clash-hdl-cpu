@@ -1,6 +1,7 @@
+{-# LANGUAGE DerivingStrategies #-}
 module Example.Project (topEntity, plus) where
 
-import Clash.Prelude hiding (Word)
+import Clash.Prelude hiding (Word, cycle)
 import Clash.Explicit.Testbench
 import Clash.Num.Saturating (Saturating)
 import qualified Clash.Promoted.Nat.Literals as Nat
@@ -86,13 +87,21 @@ topEntity
 topEntity = exposeClockResetEnable (fir coeff_t)
 
 
-data Register = R1 | R2 | R3 | R4 deriving Show
+data Register = R1 | R2 | R3 | R4 
+  deriving stock (Generic, Show)
+  deriving anyclass NFDataX
 
-newtype Ptr = Ptr (Unsigned 64) deriving Show
+newtype Ptr = Ptr (Unsigned 64) 
+  deriving stock (Generic, Show)
+  deriving anyclass NFDataX
 
-newtype Word = Word (Unsigned 64) deriving Show
+newtype Word = Word (Unsigned 64)
+  deriving stock (Generic, Show)
+  deriving anyclass NFDataX
 
-newtype Output = Output (Unsigned 64) deriving (Show)
+newtype Output = Output (Unsigned 64)
+  deriving stock (Generic, Show)
+  deriving anyclass NFDataX
 
 data Instruction
     = LoadIm Register (Unsigned 56)
@@ -105,7 +114,8 @@ data Instruction
     | JmpZ Register Register
     | Out Register
     | Halt
-    deriving Show
+    deriving stock (Generic, Show)
+    deriving anyclass NFDataX
 
 
 data CPUActivity
@@ -115,7 +125,8 @@ data CPUActivity
   | WritingMemory Ptr Word
   | Outputting Output
   | Halted
-  deriving Show
+  deriving stock (Generic, Show)
+  deriving anyclass NFDataX
 
 
 data Registers = Registers
@@ -124,12 +135,16 @@ data Registers = Registers
   , r3 :: Unsigned 64
   , r4 :: Unsigned 64
   , pc :: Ptr
-} deriving Show
+} deriving stock (Generic, Show)
+  deriving anyclass NFDataX
 
 data CPUState = CPUState CPUActivity Registers
-  deriving Show
+  deriving stock (Generic, Show)
+  deriving anyclass NFDataX
 
 data RAM = RAM (Vec 64 Word)
+  deriving stock (Generic, Show)
+  deriving anyclass NFDataX
 
 readRegister :: Registers -> Register -> Unsigned 64
 readRegister (Registers reg1 reg2 reg3 reg4 _) reg = case reg of
@@ -261,3 +276,42 @@ cycle (CPUState activity registers, ram) = case activity of
       ram' = writeRAM ram ptr val
   Outputting _ -> (CPUState LoadingInstruction registers, ram)
   Halted -> (CPUState Halted registers, ram)
+
+
+isHalted :: CPUState -> Bool
+isHalted (CPUState Halted _) = True
+isHalted _ = False
+
+output :: CPUState -> Maybe Output
+output (CPUState (Outputting output) _) = Just output
+output _ = Nothing
+
+getOutput :: (CPUState, RAM) -> (Bool, Maybe Output)
+getOutput (state, _) = (isHalted state, output state)
+
+cpuHardware :: (HiddenClockResetEnable dom) => CPUState -> RAM -> Signal dom (Bool, Maybe Output)
+cpuHardware initialCPUState initialRam = outputSignal
+  where
+    systemState = register (initialCPUState, initialRam) systemState'
+    systemState' = fmap cycle systemState
+    outputSignal = fmap getOutput systemState'
+
+defaultCPUState :: CPUState
+defaultCPUState = CPUState LoadingInstruction (Registers 0 0 0 0 (Ptr 0))
+
+simpleProgram :: Vec 7 Instruction
+simpleProgram = 
+    LoadIm R1 7 :>
+    LoadIm R2 8 :>
+    LoadIm R3 9 :>
+    Out R1      :>
+    Out R2      :>
+    Out R3      :>
+    Halt        :>
+    Nil
+
+simpleProgramMem :: Vec 64 Word
+simpleProgramMem = fmap encodeInstruction simpleProgram ++ repeat (Word 0)
+
+simpleProgramOutput :: [(Bool, Maybe Output)]
+simpleProgramOutput = take 20 $ sample simpleProgramCPU
